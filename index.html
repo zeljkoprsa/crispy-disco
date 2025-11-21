@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Abstract Sphere Field</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            /* Dark background like the reference */
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: sans-serif;
+            font-size: 24px;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+
+        #controls-info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.6);
+            font-family: sans-serif;
+            font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loading">Generating Spheres...</div>
+    <!-- Added a recording indicator -->
+    <div id="recording-status"
+        style="position: absolute; top: 20px; right: 20px; color: red; font-family: sans-serif; font-weight: bold; display: none; align-items: center; gap: 10px;">
+        <div style="width: 12px; height: 12px; background-color: red; border-radius: 50%;"></div>
+        RECORDING...
+    </div>
+    <div id="controls-info">Mouse: Orbit | Scroll: Zoom | Right-Click: Pan</div>
+
+    <!-- Three.js and dependencies -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Simplex Noise for organic terrain generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+    <!-- lil-gui for controls -->
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.17.0/dist/lil-gui.umd.min.js"></script>
+
+    <!-- Post-Processing Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+
+    <script>
+        // Configuration
+        const CONFIG = {
+            sphereCount: 100, // Grid size (100x100 = 10,000 spheres)
+            sphereSize: 0.4,
+            spacing: 0.7,
+            sphereDetail: 32, // Increased from 16 to 32 for smoother spheres
+            noiseScale: 0.05,
+            heightScale: 6.0,
+            animSpeed: 0.002,
+            // New Patch Settings
+            patchRadius: 10.0,
+            patchDepth: -4.0,
+            patchNoiseStrength: 2.0,
+            colors: {
+                purple: 0xcbbae8, // Field Color
+                red: 0x8332a9,    // Patch Color
+                bg: new THREE.Color(0x050505)
+            },
+            // Export settings
+            exportDuration: 10, // seconds
+            // Post-Processing
+            bloomStrength: 0,
+            bloomRadius: 0.4,
+            bloomThreshold: 0.1,
+            enableBloom: true,
+            // Cluster Randomization
+            clusterScale: 0.1, // Controls size of clusters (lower = larger clusters)
+            clusterStrength: 0.15 // 15% variation
+        };
+
+        // Scene Management Variables
+        const SCENE_MANAGER = {
+            sceneName: "My Scene 1",
+            selectedScene: "",
+            savedScenes: {}, // Will be loaded from localStorage
+
+            // Actions
+            saveScene: function () {
+                if (!this.sceneName) return alert("Please enter a scene name");
+
+                const sceneData = {
+                    config: JSON.parse(JSON.stringify(CONFIG)), // Deep copy config
+                    camera: {
+                        position: camera.position.clone(),
+                        target: controls.target.clone()
+                    },
+                    lights: {
+                        dir: {
+                            position: dirLight.position.clone(),
+                            intensity: dirLight.intensity
+                        },
+                        point: {
+                            position: redLight.position.clone(),
+                            intensity: redLight.intensity,
+                            distance: redLight.distance
+                        }
+                    }
+                };
+
+                // Fix Color objects turning into weird JSON
+                // (CONFIG.colors is already hex/int friendly from previous edits, but let's be safe)
+
+                this.savedScenes[this.sceneName] = sceneData;
+                localStorage.setItem('sphere_field_scenes', JSON.stringify(this.savedScenes));
+
+                // Update dropdown
+                updateSceneDropdown();
+                this.selectedScene = this.sceneName;
+                alert(`Scene "${this.sceneName}" saved!`);
+            },
+
+            loadSelected: function () {
+                const name = this.selectedScene;
+                const data = this.savedScenes[name];
+                if (!data) return alert("No scene selected");
+
+                // 1. Restore Config
+                Object.assign(CONFIG, data.config);
+                // Be careful with nested objects like colors if they were overwritten
+                // Ensure colors are valid numbers/objects
+
+                // 2. Restore Camera
+                if (data.camera) {
+                    camera.position.copy(data.camera.position);
+                    controls.target.copy(data.camera.target);
+                    controls.update();
+                }
+
+                // 3. Restore Lights
+                if (data.lights) {
+                    dirLight.position.copy(data.lights.dir.position);
+                    dirLight.intensity = data.lights.dir.intensity;
+
+                    redLight.position.copy(data.lights.point.position);
+                    redLight.intensity = data.lights.point.intensity;
+                    redLight.distance = data.lights.point.distance;
+                }
+
+                // 4. Update GUI to reflect new values
+                // We recursively update all controllers in the GUI
+                gui.controllersRecursive().forEach(c => c.updateDisplay());
+
+                // 5. Re-init logic
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(() => {
+                    initSpheres();
+                    // Force background update
+                    scene.background = new THREE.Color(CONFIG.colors.bg);
+                    scene.fog.color = new THREE.Color(CONFIG.colors.bg);
+                }, 50);
+            },
+
+            deleteScene: function () {
+                if (!this.selectedScene) return;
+                if (confirm(`Delete scene "${this.selectedScene}"?`)) {
+                    delete this.savedScenes[this.selectedScene];
+                    localStorage.setItem('sphere_field_scenes', JSON.stringify(this.savedScenes));
+                    updateSceneDropdown();
+                    this.selectedScene = "";
+                }
+            }
+        };
+
+        // Setup Scene
+        const scene = new THREE.Scene();
+        scene.background = CONFIG.colors.bg;
+        scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.02);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(20, 15, 20);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        // Added Pixel Ratio for sharp rendering on high-DPI screens (Retina displays)
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        document.body.appendChild(renderer.domElement);
+
+        // Controls
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 0.5;
+
+        // Post-Processing Setup
+        const renderScene = new THREE.RenderPass(scene, camera);
+
+        const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = CONFIG.bloomThreshold;
+        bloomPass.strength = CONFIG.bloomStrength;
+        bloomPass.radius = CONFIG.bloomRadius;
+
+        const composer = new THREE.EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // Lighting
+        const ambientLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(50, 50, 20);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 0.5;
+        dirLight.shadow.camera.far = 150;
+        dirLight.shadow.camera.left = -50;
+        dirLight.shadow.camera.right = 50;
+        dirLight.shadow.camera.top = 50;
+        dirLight.shadow.camera.bottom = -50;
+        dirLight.shadow.bias = -0.0005;
+        scene.add(dirLight);
+
+        // Add a specific light for the red crater to make it pop
+        // Add a specific light for the red crater to make it pop
+        const redLight = new THREE.PointLight(0xff5555, 2.0, 30); // Increased intensity and range for bloom
+        redLight.position.set(0, 2, 0);
+        scene.add(redLight);
+
+        // Rim Light (Backlight) for cinematic separation
+        const rimLight = new THREE.SpotLight(0x4455ff, 2.0);
+        rimLight.position.set(-20, 10, -20);
+        rimLight.lookAt(0, 0, 0);
+        scene.add(rimLight);
+
+        // Variables that need to be accessed globally for regeneration
+        let mesh;
+        let positions = [];
+        const simplex = new SimplexNoise();
+        const dummy = new THREE.Object3D();
+        const _color = new THREE.Color();
+        // Helper color objects for the GUI
+        const _patchColor = new THREE.Color();
+        const _fieldColor = new THREE.Color();
+
+        // Recording Logic
+        function exportVideo() {
+            const statusEl = document.getElementById('recording-status');
+            const canvas = renderer.domElement;
+
+            // Check support
+            if (!window.MediaRecorder) {
+                alert("Your browser does not support MediaRecorder API");
+                return;
+            }
+
+            statusEl.style.display = 'flex';
+
+            // Capture the stream at 30fps
+            const stream = canvas.captureStream(30);
+
+            // Prefer high quality codecs, try MP4 first for better compatibility
+            const mimeTypes = [
+                'video/mp4;codecs=h264',
+                'video/mp4',
+                'video/webm;codecs=vp9',
+                'video/webm;codecs=vp8',
+                'video/webm'
+            ];
+            const mimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'video/webm';
+
+            // Determine extension
+            const extension = mimeType.includes('mp4') ? 'mp4' : 'webm';
+
+            console.log(`Exporting with mimeType: ${mimeType}`);
+
+            let recorder;
+            try {
+                recorder = new MediaRecorder(stream, {
+                    mimeType: mimeType,
+                    videoBitsPerSecond: 8000000 // 8 Mbps
+                });
+            } catch (e) {
+                console.error("MediaRecorder creation failed", e);
+                alert("Failed to create MediaRecorder: " + e.message);
+                statusEl.style.display = 'none';
+                return;
+            }
+
+            const chunks = [];
+
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) chunks.push(e.data);
+            };
+
+            recorder.onstop = () => {
+                statusEl.style.display = 'none';
+
+                if (chunks.length === 0) {
+                    alert("Recording failed: No data captured.");
+                    return;
+                }
+
+                const blob = new Blob(chunks, { type: mimeType });
+                console.log(`Exporting video: ${blob.size} bytes, type: ${mimeType}`);
+
+                // Workaround for file:// protocol: Use Data URI instead of Blob URL
+                // Blob URLs (blob:null/...) often fail to download in Chrome when running locally
+                const reader = new FileReader();
+                reader.onload = function (e) {
+                    const a = document.createElement('a');
+                    a.href = e.target.result; // Data URI
+
+                    // Sanitize filename
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                    a.download = `sphere-field-demo-${timestamp}.${extension}`;
+
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                };
+                reader.readAsDataURL(blob);
+            };
+
+            recorder.start();
+
+            // Warn if running on file://
+            if (window.location.protocol === 'file:') {
+                // Create a visible warning on the UI
+                const warning = document.createElement('div');
+                warning.style.cssText = 'position:absolute; top:10px; left:50%; transform:translateX(-50%); background:rgba(255,0,0,0.8); color:white; padding:10px; border-radius:5px; pointer-events:none; z-index:9999; font-family:sans-serif; text-align:center;';
+                warning.innerHTML = '⚠️ Running on file:// protocol.<br>If download fails, please use a local server.';
+                document.body.appendChild(warning);
+                setTimeout(() => warning.remove(), 5000);
+            }
+
+            // Stop after exportDuration
+            setTimeout(() => {
+                if (recorder.state === 'recording') {
+                    recorder.stop();
+                }
+            }, CONFIG.exportDuration * 1000);
+        }
+
+        function initSpheres() {
+            // Cleanup existing mesh if it exists
+            if (mesh) {
+                scene.remove(mesh);
+                mesh.geometry.dispose();
+                mesh.material.dispose();
+                mesh = null;
+                positions = [];
+            }
+
+            // Use sphereDetail config here
+            const geometry = new THREE.SphereGeometry(CONFIG.sphereSize, CONFIG.sphereDetail, CONFIG.sphereDetail);
+            const material = new THREE.MeshStandardMaterial({
+                roughness: 0.2, // Lower roughness for more reflections
+                metalness: 0.6, // Higher metalness for sci-fi look
+            });
+
+            const count = CONFIG.sphereCount * CONFIG.sphereCount;
+            mesh = new THREE.InstancedMesh(geometry, material, count);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+
+            let index = 0;
+            const offset = (CONFIG.sphereCount * CONFIG.spacing) / 2;
+
+            for (let x = 0; x < CONFIG.sphereCount; x++) {
+                for (let z = 0; z < CONFIG.sphereCount; z++) {
+                    // Calculate grid position centered around 0,0
+                    const posX = (x * CONFIG.spacing) - offset;
+                    const posZ = (z * CONFIG.spacing) - offset;
+
+                    // Add some random jitter to X/Z so it looks organic, not perfectly gridded
+                    const jitter = 0.15;
+                    const finalX = posX + (Math.random() * jitter - jitter / 2);
+                    const finalZ = posZ + (Math.random() * jitter - jitter / 2);
+
+                    // Store a stable random value (colorOffset) here
+                    positions.push({
+                        x: finalX,
+                        z: finalZ,
+                        idx: index,
+                        colorOffset: Math.random()
+                    });
+                    index++;
+                }
+            }
+
+            updateSpheres(0); // Initial placement
+
+            // Hide loading text
+            document.getElementById('loading').style.opacity = 0;
+        }
+
+        function updateSpheres(time) {
+            if (!mesh) return;
+
+            // Update helper colors from config numbers
+            _patchColor.setHex(CONFIG.colors.red);
+            _fieldColor.setHex(CONFIG.colors.purple);
+
+            for (let i = 0; i < positions.length; i++) {
+                const { x, z, idx, colorOffset } = positions[i];
+
+                // 1. Generate Height (Y)
+                // Base noise for the rolling hills
+                let noise = simplex.noise3D(x * CONFIG.noiseScale, z * CONFIG.noiseScale, time * 0.1);
+
+                // Distance from center for the "crater" effect
+                const dist = Math.sqrt(x * x + z * z);
+
+                // Dynamic Crater Logic based on CONFIG
+                // We define an inner "full depth" radius and an outer "surface" radius
+                // to create a slope.
+                const falloff = 8.0; // Width of the slope
+                const innerRadius = Math.max(0, CONFIG.patchRadius - (falloff / 2));
+
+                // Calculate blend factor (0 = center/deep, 1 = outside/surface)
+                let craterFactor = Math.min(1, Math.max(0, (dist - innerRadius) / falloff));
+
+                let y = (noise * 2.5) + (1.0 - craterFactor) * CONFIG.patchDepth;
+
+                // Add detail noise for small variations
+                y += simplex.noise3D(x * 0.2, z * 0.2, time) * 0.2;
+
+                // 2. Position Object
+                dummy.position.set(x, y, z);
+
+                // Scale spheres slightly based on height/noise for organic feel
+                let scale = 1.0 + (noise * 0.2);
+
+                // Apply Cluster Randomization
+                // Use a different noise offset/scale for clusters so it doesn't match the terrain exactly
+                // We use simplex.noise2D(x, z) which returns -1 to 1.
+                // We map it to 1.0 +/- clusterStrength
+                const clusterNoise = simplex.noise2D(x * CONFIG.clusterScale + 100, z * CONFIG.clusterScale + 100);
+                // clusterNoise is -1 to 1. We want to vary scale by +/- strength.
+                scale *= (1.0 + (clusterNoise * CONFIG.clusterStrength));
+
+                dummy.scale.set(scale, scale, scale);
+
+                dummy.updateMatrix();
+                mesh.setMatrixAt(idx, dummy.matrix);
+
+                // 3. Color Logic
+                // Reproduce the image: Red in the center crater, Purple everywhere else
+                // We use a slightly noisy threshold so the border isn't a perfect circle
+
+                const colorNoise = simplex.noise2D(x * 0.1, z * 0.1) * CONFIG.patchNoiseStrength;
+
+                if (dist + colorNoise < CONFIG.patchRadius) {
+                    // Inner Crater (Red)
+                    const rVar = colorOffset * 0.1;
+                    _color.copy(_patchColor).offsetHSL(0, 0, rVar - 0.05);
+                } else {
+                    // Outer Field (Purple)
+                    const pVar = (y * 0.05);
+                    _color.copy(_fieldColor).offsetHSL(0.02, 0, pVar);
+                }
+
+                mesh.setColorAt(idx, _color);
+            }
+            mesh.instanceMatrix.needsUpdate = true;
+            mesh.instanceColor.needsUpdate = true;
+        }
+
+        // Initialize
+        initSpheres();
+
+        // GUI Setup
+        const gui = new lil.GUI();
+
+        // Load scenes from storage
+        try {
+            const stored = localStorage.getItem('sphere_field_scenes');
+            if (stored) {
+                SCENE_MANAGER.savedScenes = JSON.parse(stored);
+            }
+        } catch (e) { console.error("Error loading scenes", e); }
+
+        // SCENE MANAGEMENT FOLDER
+        const savesFolder = gui.addFolder('Scene Manager');
+        savesFolder.add(SCENE_MANAGER, 'sceneName').name('Scene Name');
+        savesFolder.add(SCENE_MANAGER, 'saveScene').name('Save Current Scene');
+
+        let sceneController;
+        function updateSceneDropdown() {
+            // Remove old controller if exists
+            if (sceneController) sceneController.destroy();
+
+            const options = Object.keys(SCENE_MANAGER.savedScenes);
+            if (options.length > 0) {
+                sceneController = savesFolder.add(SCENE_MANAGER, 'selectedScene', options).name('Saved Scenes');
+            } else {
+                // Placeholder if empty
+                SCENE_MANAGER.selectedScene = "";
+                sceneController = savesFolder.add(SCENE_MANAGER, 'selectedScene', ["No scenes"]).name('Saved Scenes').disable();
+            }
+        }
+        updateSceneDropdown();
+
+        savesFolder.add(SCENE_MANAGER, 'loadSelected').name('Load Selected');
+        savesFolder.add(SCENE_MANAGER, 'deleteScene').name('Delete Selected');
+
+
+        const simFolder = gui.addFolder('Simulation');
+        simFolder.add(CONFIG, 'sphereCount', 10, 200, 1)
+            .name('Grid Size')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        simFolder.add(CONFIG, 'sphereSize', 0.1, 1.5)
+            .name('Sphere Size')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        // NEW: Spacing control to adjust the gap between spheres
+        simFolder.add(CONFIG, 'spacing', 0.1, 2.0)
+            .name('Spacing')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        // Added Sphere Detail Control
+        simFolder.add(CONFIG, 'sphereDetail', 8, 64, 1)
+            .name('Sphere Detail')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        simFolder.add(CONFIG, 'animSpeed', 0, 0.01).name('Anim Speed');
+
+        const patchFolder = gui.addFolder('Crater / Patch Controls');
+        patchFolder.add(CONFIG, 'patchRadius', 1, 30).name('Radius');
+        patchFolder.add(CONFIG, 'patchDepth', -15, 15).name('Depth');
+        patchFolder.add(CONFIG, 'patchNoiseStrength', 0, 10).name('Edge Noise');
+        patchFolder.addColor(CONFIG.colors, 'red').name('Patch Color');
+        patchFolder.addColor(CONFIG.colors, 'purple').name('Field Color');
+
+        const sunFolder = gui.addFolder('Sun Light (Directional)');
+        sunFolder.add(dirLight.position, 'x', -100, 100).name('Pos X');
+        sunFolder.add(dirLight.position, 'y', 0, 100).name('Pos Y');
+        sunFolder.add(dirLight.position, 'z', -100, 100).name('Pos Z');
+        sunFolder.add(dirLight, 'intensity', 0, 3).name('Intensity');
+
+        const redFolder = gui.addFolder('Crater Light (Point)');
+        redFolder.add(redLight.position, 'x', -50, 50).name('Pos X');
+        redFolder.add(redLight.position, 'y', 0, 50).name('Pos Y');
+        redFolder.add(redLight.position, 'z', -50, 50).name('Pos Z');
+        redFolder.add(redLight, 'intensity', 0, 5).name('Intensity');
+        redFolder.add(redLight, 'distance', 0, 100).name('Distance (Range)');
+
+        const exportFolder = gui.addFolder('Export');
+        exportFolder.add(CONFIG, 'exportDuration', 1, 60, 1).name('Duration (sec)');
+        exportFolder.add({ exportVideo }, 'exportVideo').name('Record Video');
+
+        const bloomFolder = gui.addFolder('Post-Processing (Bloom)');
+        bloomFolder.add(CONFIG, 'enableBloom').name('Enable Bloom');
+        bloomFolder.add(CONFIG, 'bloomStrength', 0, 3).onChange(v => bloomPass.strength = v);
+        bloomFolder.add(CONFIG, 'bloomRadius', 0, 1).onChange(v => bloomPass.radius = v);
+        bloomFolder.add(CONFIG, 'bloomThreshold', 0, 1).onChange(v => bloomPass.threshold = v);
+
+        const clusterFolder = gui.addFolder('Cluster Randomization');
+        clusterFolder.add(CONFIG, 'clusterScale', 0.01, 0.5).name('Cluster Scale (Size)');
+        clusterFolder.add(CONFIG, 'clusterStrength', 0, 0.5).name('Variation Strength');
+
+        // Animation Loop
+        let time = 0;
+        function animate() {
+            requestAnimationFrame(animate);
+
+            time += CONFIG.animSpeed;
+            updateSpheres(time);
+
+            controls.update();
+
+            if (CONFIG.enableBloom) {
+                composer.render();
+            } else {
+                renderer.render(scene, camera);
+            }
+        }
+
+        animate();
+
+        // Resize Handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+
+</html>
