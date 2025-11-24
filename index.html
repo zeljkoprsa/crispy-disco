@@ -92,10 +92,6 @@
             noiseStrength: 2.0,
             noiseScale: 0.05,
             noiseSpeed: 0.005,
-            // Interaction Settings
-            interactionRadius: 8.0,
-            interactionStrength: 5.0,
-            interactionType: 'Repel', // 'Repel', 'Attract'
             // Audio Settings
             audioEnabled: false,
             audioSensitivity: 1.0,
@@ -220,9 +216,6 @@
 
                 // Migration: Ensure Interaction Defaults
                 if (CONFIG.interactionRadius === undefined) CONFIG.interactionRadius = 8.0;
-                if (CONFIG.interactionStrength === undefined) CONFIG.interactionStrength = 5.0;
-                if (CONFIG.interactionType === undefined) CONFIG.interactionType = 'Repel';
-
                 // Migration: Ensure Audio Defaults
                 if (CONFIG.audioEnabled === undefined) CONFIG.audioEnabled = false;
                 if (CONFIG.audioSensitivity === undefined) CONFIG.audioSensitivity = 1.0;
@@ -383,17 +376,108 @@
 
         // Variables that need to be accessed globally for regeneration
         let mesh;
-        let positions = [];
-        let interactionMesh; // Invisible mesh for raycasting
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-        let interactionTarget = new THREE.Vector3(10000, 10000, 10000); // Far away initially
+        // let positions = []; // No longer needed for CPU animation
+        let customUniforms = {
+            uTime: { value: 0 },
+            uWaveAmp: { value: 2.0 },
+            uWaveFreqX: { value: 0.1 },
+            uWaveFreqZ: { value: 0.1 },
+            uWaveSpeed: { value: 0.01 },
+            uNoiseStrength: { value: 2.0 },
+            uNoiseScale: { value: 0.05 },
+            uNoiseSpeed: { value: 0.005 },
+            uBaseColor: { value: new THREE.Color(0x5500ff) },
+            uHighlightColor: { value: new THREE.Color(0xff0055) },
+            uAudioBass: { value: 0.0 },
+            uAudioMids: { value: 0.0 },
+            uAudioHighs: { value: 0.0 },
+            uClusterScale: { value: 0.02 },
+            uClusterStrength: { value: 0.5 }
+        };
 
-        // Mouse Move Handler
-        window.addEventListener('mousemove', (event) => {
-            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-        });
+        // GLSL Noise Function (Simplex 3D)
+        const noiseGLSL = `
+            vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+            vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+            float snoise(vec3 v) {
+                const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+                const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+                vec3 i  = floor(v + dot(v, C.yyy) );
+                vec3 x0 = v - i + dot(i, C.xxx) ;
+                vec3 g = step(x0.yzx, x0.xyz);
+                vec3 l = 1.0 - g;
+                vec3 i1 = min( g.xyz, l.zxy );
+                vec3 i2 = max( g.xyz, l.zxy );
+                vec3 x1 = x0 - i1 + C.xxx;
+                vec3 x2 = x0 - i2 + C.yyy; // 2.0*C.x = 1/3 = C.y
+                vec3 x3 = x0 - D.yyy;      // -1.0+3.0*C.x = -0.5 = -D.y
+                i = mod289(i);
+                vec4 p = permute( permute( permute(
+                            i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+                        + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+                        + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+                float n_ = 0.142857142857; // 1.0/7.0
+                vec3  ns = n_ * D.wyz - D.xzx;
+                vec4 j = p - 49.0 * floor(p * ns.z * ns.z);  //  mod(p,7*7)
+                vec4 x_ = floor(j * ns.z);
+                vec4 y_ = floor(j - 7.0 * x_ );    // mod(j,N)
+                vec4 x = x_ *ns.x + ns.yyyy;
+                vec4 y = y_ *ns.x + ns.yyyy;
+                vec4 h = 1.0 - abs(x) - abs(y);
+                vec4 b0 = vec4( x.xy, y.xy );
+                vec4 b1 = vec4( x.zw, y.zw );
+                vec4 s0 = floor(b0)*2.0 + 1.0;
+                vec4 s1 = floor(b1)*2.0 + 1.0;
+                vec4 sh = -step(h, vec4(0.0));
+                vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+                vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+                vec3 p0 = vec3(a0.xy,h.x);
+                vec3 p1 = vec3(a0.zw,h.y);
+                vec3 p2 = vec3(a1.xy,h.z);
+                vec3 p3 = vec3(a1.zw,h.w);
+                vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+                p0 *= norm.x;
+                p1 *= norm.y;
+                p2 *= norm.z;
+                p3 *= norm.w;
+                vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+                m = m * m;
+                return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
+            }
+            // Simplex 2D for cluster
+            vec3 mod289_2(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec2 mod289_2(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+            vec3 permute_2(vec3 x) { return mod289_2(((x*34.0)+1.0)*x); }
+            float snoise(vec2 v) {
+                const vec4 C = vec4(0.211324865405187,  // (3.0-sqrt(3.0))/6.0
+                                    0.366025403784439,  // 0.5*(sqrt(3.0)-1.0)
+                                    -0.577350269189626,  // -1.0 + 2.0 * C.x
+                                    0.024390243902439); // 1.0 / 41.0
+                vec2 i  = floor(v + dot(v, C.yy) );
+                vec2 x0 = v - i + dot(i, C.xx);
+                vec2 i1;
+                i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+                vec4 x12 = x0.xyxy + C.xxzz;
+                x12.xy -= i1;
+                i = mod289_2(i); // Avoid truncation effects in permutation
+                vec3 p = permute_2( permute_2( i.y + vec3(0.0, i1.y, 1.0 ))
+                    + i.x + vec3(0.0, i1.x, 1.0 ));
+                vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+                m = m*m ;
+                m = m*m ;
+                vec3 x = 2.0 * fract(p * C.www) - 1.0;
+                vec3 h = abs(x) - 0.5;
+                vec3 ox = floor(x + 0.5);
+                vec3 a0 = x - ox;
+                m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
+                vec3 g;
+                g.x  = a0.x  * x0.x  + h.x  * x0.y;
+                g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+                return 130.0 * dot(m, g);
+            }
+        `;
         const simplex = new SimplexNoise();
         const dummy = new THREE.Object3D();
         const _color = new THREE.Color();
@@ -527,35 +611,6 @@
                 mesh.geometry.dispose();
                 mesh.material.dispose();
                 mesh = null;
-                positions = [];
-            }
-
-            // Cleanup interaction mesh
-            if (interactionMesh) {
-                scene.remove(interactionMesh);
-                interactionMesh.geometry.dispose();
-                interactionMesh.material.dispose();
-                interactionMesh = null;
-            }
-
-            // Create Interaction Mesh (Invisible)
-            let interactionGeo;
-            if (CONFIG.gridShape === 'Grid') {
-                // Plane
-                const size = CONFIG.sphereCount * CONFIG.spacing;
-                interactionGeo = new THREE.PlaneGeometry(size, size);
-                interactionGeo.rotateX(-Math.PI / 2); // Horizontal
-            } else if (CONFIG.gridShape === 'Sphere') {
-                interactionGeo = new THREE.SphereGeometry(CONFIG.shapeSize, 32, 32);
-            } else if (CONFIG.gridShape === 'Cube') {
-                const s = CONFIG.shapeSize;
-                interactionGeo = new THREE.BoxGeometry(s, s, s);
-            }
-
-            if (interactionGeo) {
-                const interactionMat = new THREE.MeshBasicMaterial({ visible: false }); // Invisible
-                interactionMesh = new THREE.Mesh(interactionGeo, interactionMat);
-                scene.add(interactionMesh);
             }
 
             // Use sphereDetail config here
@@ -603,16 +658,158 @@
             const material = new THREE.MeshStandardMaterial({
                 roughness: matProps.roughness,
                 metalness: matProps.metalness,
-                side: THREE.DoubleSide // Ensure 2D shapes are visible from both sides
+                side: THREE.DoubleSide
             });
+
+            // INJECT SHADER CODE
+            material.onBeforeCompile = (shader) => {
+                // Pass uniforms
+                Object.assign(shader.uniforms, customUniforms);
+
+                shader.vertexShader = `
+                    uniform float uTime;
+                    uniform float uWaveAmp;
+                    uniform float uWaveFreqX;
+                    uniform float uWaveFreqZ;
+                    uniform float uWaveSpeed;
+                    uniform float uNoiseStrength;
+                    uniform float uNoiseScale;
+                    uniform float uNoiseSpeed;
+                    uniform vec3 uBaseColor;
+                    uniform vec3 uHighlightColor;
+                    uniform float uAudioBass;
+                    uniform float uAudioMids;
+                    uniform float uAudioHighs;
+                    uniform float uClusterScale;
+                    uniform float uClusterStrength;
+
+                    attribute vec3 aCustomNormal;
+                    attribute float aColorOffset;
+                    
+                    varying vec3 vColor;
+
+                    ${noiseGLSL}
+                ` + shader.vertexShader;
+
+                // Replace <begin_vertex>
+                shader.vertexShader = shader.vertexShader.replace(
+                    '#include <begin_vertex>',
+                    `
+                    vec3 transformed = vec3( position );
+                    
+                    // Get base position from instanceMatrix (column 3)
+                    vec3 basePos = vec3( instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2] );
+                    
+                    // --- AUDIO MODULATION ---
+                    float modAmp = uWaveAmp + (uAudioBass * 5.0 * 1.0); // Sensitivity hardcoded or passed? Passed via config update
+                    float modNoise = uNoiseStrength + (uAudioMids * 5.0 * 1.0);
+
+                    // --- WAVE ---
+                    float t = uTime * uWaveSpeed;
+                    float waveX = sin(basePos.x * uWaveFreqX + t);
+                    float waveZ = cos(basePos.z * uWaveFreqZ + t);
+                    float waveY = sin(basePos.y * uWaveFreqX + t);
+                    
+                    float displacement = (waveX + waveZ + waveY) * modAmp;
+
+                    // --- NOISE ---
+                    if (modNoise > 0.0) {
+                        float n = snoise(basePos * uNoiseScale + vec3(0.0, 0.0, t * uNoiseSpeed * 100.0)); // 3D noise
+                        displacement += n * modNoise;
+                    }
+
+                    // --- APPLY DISPLACEMENT ---
+                    // Apply along custom normal
+                    vec3 finalPos = basePos + (aCustomNormal * displacement);
+                    
+                    // We need to transform 'transformed' (local vertex) to this new position.
+                    // Since we are using InstancedMesh, 'transformed' is local.
+                    // The instanceMatrix handles the base position.
+                    // So we effectively want to ADD the displacement * normal to the local vertex position?
+                    // No, we want to move the whole instance.
+                    // But InstancedMesh vertex shader usually does: position = instanceMatrix * vec4(position, 1.0)
+                    // We can modify the instanceMatrix result or just add to 'transformed' if we treat it as world offset?
+                    // Actually, simpler:
+                    // The 'instanceMatrix' puts the mesh at 'basePos'.
+                    // We want to move it by (aCustomNormal * displacement).
+                    // So we can just add that to 'transformed'.
+                    // BUT 'transformed' is in local space. 'aCustomNormal' is likely in World space (or same space as basePos).
+                    // If the instance is not rotated, local space == world space (relative to instance center).
+                    // Our instances are NOT rotated (identity matrix for rotation), only translated.
+                    // So we can just add the displacement vector to 'transformed'.
+                    
+                    transformed += (aCustomNormal * displacement);
+
+                    // --- SCALE ---
+                    float totalAmp = (modAmp * 3.0) + modNoise + 0.001;
+                    float normDisp = (displacement / totalAmp) + 0.5;
+                    float scale = 1.0 + (normDisp * 0.5);
+                    
+                    // Cluster Scale
+                    float clusterNoise = snoise(basePos.xz * uClusterScale + 100.0);
+                    scale *= (1.0 + (clusterNoise * uClusterStrength));
+
+                    // Audio Highs Jitter
+                    // scale += (uAudioHighs * fract(sin(dot(basePos.xy ,vec2(12.9898,78.233))) * 43758.5453)); // Pseudo random
+                    
+                    transformed *= scale;
+
+                    // --- COLOR ---
+                    float mixVal = clamp(normDisp, 0.0, 1.0);
+                    mixVal += uAudioHighs;
+                    mixVal = clamp(mixVal, 0.0, 1.0);
+                    
+                    vec3 c = mix(uBaseColor, uHighlightColor, mixVal);
+                    // Random variation
+                    // c += (aColorOffset - 0.5) * 0.1; // Simple RGB offset or HSL?
+                    // HSL in shader is expensive, let's just do simple RGB tint
+                    c += vec3((aColorOffset - 0.5) * 0.1);
+                    
+                    vColor = c;
+                    `
+                );
+
+                // Inject Color Varying to Fragment
+                shader.fragmentShader = `
+                    varying vec3 vColor;
+                ` + shader.fragmentShader;
+
+                shader.fragmentShader = shader.fragmentShader.replace(
+                    '#include <color_fragment>',
+                    `
+                    #include <color_fragment>
+                    diffuseColor.rgb = vColor;
+                    `
+                );
+
+                // Store shader for updates if needed (though we use customUniforms object)
+                material.userData.shader = shader;
+            };
 
             const count = CONFIG.sphereCount * CONFIG.sphereCount;
             mesh = new THREE.InstancedMesh(geometry, material, count);
             mesh.castShadow = true;
             mesh.receiveShadow = true;
-            scene.add(mesh);
+
+            // Attributes
+            const customNormals = new Float32Array(count * 3);
+            const colorOffsets = new Float32Array(count);
 
             let index = 0;
+            const dummy = new THREE.Object3D();
+
+            // Helper to set data
+            const setInstance = (i, x, y, z, nx, ny, nz) => {
+                dummy.position.set(x, y, z);
+                dummy.updateMatrix();
+                mesh.setMatrixAt(i, dummy.matrix);
+
+                customNormals[i * 3] = nx;
+                customNormals[i * 3 + 1] = ny;
+                customNormals[i * 3 + 2] = nz;
+
+                colorOffsets[i] = Math.random();
+            };
 
             if (CONFIG.gridShape === 'Grid') {
                 const offset = (CONFIG.sphereCount * CONFIG.spacing) / 2;
@@ -620,209 +817,69 @@
                     for (let z = 0; z < CONFIG.sphereCount; z++) {
                         const posX = (x * CONFIG.spacing) - offset;
                         const posZ = (z * CONFIG.spacing) - offset;
-
                         const jitter = CONFIG.jitter;
                         const finalX = posX + (Math.random() * jitter - jitter / 2);
                         const finalZ = posZ + (Math.random() * jitter - jitter / 2);
 
-                        positions.push({
-                            baseX: finalX,
-                            baseY: 0,
-                            baseZ: finalZ,
-                            normX: 0,
-                            normY: 1,
-                            normZ: 0,
-                            idx: index,
-                            colorOffset: Math.random()
-                        });
+                        setInstance(index, finalX, 0, finalZ, 0, 1, 0);
                         index++;
                     }
                 }
             } else if (CONFIG.gridShape === 'Sphere') {
-                // Fibonacci Sphere
                 for (let i = 0; i < count; i++) {
                     const phi = Math.acos(1 - 2 * (i + 0.5) / count);
                     const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-
                     const x = Math.cos(theta) * Math.sin(phi);
                     const y = Math.cos(phi);
                     const z = Math.sin(theta) * Math.sin(phi);
-
                     const r = CONFIG.shapeSize;
-
-                    // Apply Cartesian Jitter to match Grid behavior
                     const jX = (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
                     const jY = (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
                     const jZ = (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
 
-                    positions.push({
-                        baseX: (x * r) + jX,
-                        baseY: (y * r) + jY,
-                        baseZ: (z * r) + jZ,
-                        normX: x,
-                        normY: y,
-                        normZ: z,
-                        idx: index,
-                        colorOffset: Math.random()
-                    });
+                    setInstance(index, (x * r) + jX, (y * r) + jY, (z * r) + jZ, x, y, z);
                     index++;
                 }
             } else if (CONFIG.gridShape === 'Cube') {
-                // Distribute points on 6 faces
                 const side = CONFIG.shapeSize;
                 const half = side / 2;
                 const pointsPerFace = Math.floor(count / 6);
                 const gridDim = Math.floor(Math.sqrt(pointsPerFace));
-
-                // Use (gridDim - 1) to ensure points reach the edges (inclusive)
-                // If gridDim <= 1, fallback to center
                 const step = gridDim > 1 ? side / (gridDim - 1) : 0;
                 const offset = side / 2;
-
                 const faces = [
-                    { u: 'x', v: 'y', w: 'z', wVal: half, n: { x: 0, y: 0, z: 1 } },  // Front
-                    { u: 'x', v: 'y', w: 'z', wVal: -half, n: { x: 0, y: 0, z: -1 } }, // Back
-                    { u: 'z', v: 'y', w: 'x', wVal: half, n: { x: 1, y: 0, z: 0 } },  // Right
-                    { u: 'z', v: 'y', w: 'x', wVal: -half, n: { x: -1, y: 0, z: 0 } }, // Left
-                    { u: 'x', v: 'z', w: 'y', wVal: half, n: { x: 0, y: 1, z: 0 } },  // Top
-                    { u: 'x', v: 'z', w: 'y', wVal: -half, n: { x: 0, y: -1, z: 0 } }  // Bottom
+                    { u: 'x', v: 'y', w: 'z', wVal: half, n: { x: 0, y: 0, z: 1 } },
+                    { u: 'x', v: 'y', w: 'z', wVal: -half, n: { x: 0, y: 0, z: -1 } },
+                    { u: 'z', v: 'y', w: 'x', wVal: half, n: { x: 1, y: 0, z: 0 } },
+                    { u: 'z', v: 'y', w: 'x', wVal: -half, n: { x: -1, y: 0, z: 0 } },
+                    { u: 'x', v: 'z', w: 'y', wVal: half, n: { x: 0, y: 1, z: 0 } },
+                    { u: 'x', v: 'z', w: 'y', wVal: -half, n: { x: 0, y: -1, z: 0 } }
                 ];
-
                 for (const face of faces) {
                     for (let i = 0; i < gridDim; i++) {
                         for (let j = 0; j < gridDim; j++) {
-                            // Calculate position. If gridDim=1, pos is 0 (center)
                             const uPos = gridDim > 1 ? (i * step) - offset : 0;
                             const vPos = gridDim > 1 ? (j * step) - offset : 0;
-
-                            // Apply Jitter
                             const jU = uPos + (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
                             const jV = vPos + (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
-                            // Also jitter the depth slightly? No, keep faces flat unless noise is added.
-                            // Actually, for consistency, maybe jitter depth too? 
-                            // Let's jitter depth too so it's a "fuzzy cube" if jitter is high
                             const jW = face.wVal + (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
-
                             const pos = { x: 0, y: 0, z: 0 };
                             pos[face.u] = jU;
                             pos[face.v] = jV;
                             pos[face.w] = jW;
 
-                            positions.push({
-                                baseX: pos.x,
-                                baseY: pos.y,
-                                baseZ: pos.z,
-                                normX: face.n.x,
-                                normY: face.n.y,
-                                normZ: face.n.z,
-                                idx: index,
-                                colorOffset: Math.random()
-                            });
+                            setInstance(index, pos.x, pos.y, pos.z, face.n.x, face.n.y, face.n.z);
                             index++;
                         }
                     }
                 }
             }
 
-            updateSpheres(0);
+            mesh.geometry.setAttribute('aCustomNormal', new THREE.InstancedBufferAttribute(customNormals, 3));
+            mesh.geometry.setAttribute('aColorOffset', new THREE.InstancedBufferAttribute(colorOffsets, 1));
+
+            scene.add(mesh);
             document.getElementById('loading').style.opacity = 0;
-        }
-
-        function updateSpheres(time, audioBass = 0, audioMids = 0, audioHighs = 0) {
-            if (!mesh) return;
-
-            // Update helper colors from config numbers
-            _baseColor.setHex(CONFIG.colors.base);
-            _highlightColor.setHex(CONFIG.colors.highlight);
-
-            // Audio Modulation
-            const s = CONFIG.audioSensitivity;
-            const modAmp = CONFIG.waveAmplitude + (audioBass * 5.0 * s); // Bass drives amplitude
-            const modNoise = CONFIG.noiseStrength + (audioMids * 5.0 * s); // Mids drive noise
-            // Highs will drive color brightness/highlight mix
-
-            for (let i = 0; i < positions.length; i++) {
-                const { baseX, baseY, baseZ, normX, normY, normZ, idx, colorOffset } = positions[i];
-
-                // 1. Generate Displacement using Wave Logic
-                // Use base positions for wave inputs
-
-                const t = time * CONFIG.waveSpeed;
-                const waveX = Math.sin(baseX * CONFIG.waveFrequencyX + t);
-                const waveZ = Math.cos(baseZ * CONFIG.waveFrequencyZ + t);
-                // Add Y contribution for 3D shapes
-                const waveY = Math.sin(baseY * CONFIG.waveFrequencyX + t);
-
-                let displacement = (waveX + waveZ + waveY) * modAmp;
-
-                // Apply Noise
-                if (modNoise > 0) {
-                    const n = simplex.noise3D(baseX * CONFIG.noiseScale, baseZ * CONFIG.noiseScale, time * CONFIG.noiseSpeed);
-                    displacement += n * modNoise;
-                }
-
-                // Apply Interaction Force
-                const dist = interactionTarget.distanceToSquared(new THREE.Vector3(baseX, baseY, baseZ)); // Approx distance to base
-                // Actually, distanceToSquared is faster. Radius squared.
-                const rSq = CONFIG.interactionRadius * CONFIG.interactionRadius;
-
-                if (dist < rSq) {
-                    // Calculate falloff (1 at center, 0 at edge)
-                    const falloff = Math.pow(1.0 - (dist / rSq), 2);
-                    const force = falloff * CONFIG.interactionStrength;
-
-                    if (CONFIG.interactionType === 'Repel') {
-                        displacement += force;
-                    } else {
-                        displacement -= force;
-                    }
-                }
-
-                // 2. Position Object
-                // finalPos = basePos + (normal * displacement)
-                const x = baseX + (normX * displacement);
-                const y = baseY + (normY * displacement);
-                const z = baseZ + (normZ * displacement);
-
-                dummy.position.set(x, y, z);
-
-                // Orient sphere to normal (optional, but good for non-spherical shapes if we used non-spheres)
-                // dummy.lookAt(x + normX, y + normY, z + normZ);
-
-                // Scale spheres slightly based on displacement
-                // Scale spheres slightly based on displacement
-                const totalAmp = (modAmp * 3) + modNoise + 0.001;
-                const normDisp = (displacement / totalAmp) + 0.5; // 0 to 1 roughly
-
-                let scale = 1.0 + (normDisp * 0.5);
-
-                // Audio Highs affect scale jitter
-                scale += (audioHighs * s * Math.random());
-
-                // Apply Cluster Randomization
-                const clusterNoise = simplex.noise2D(x * CONFIG.clusterScale + 100, z * CONFIG.clusterScale + 100);
-                scale *= (1.0 + (clusterNoise * CONFIG.clusterStrength));
-
-                dummy.scale.set(scale, scale, scale);
-
-                dummy.updateMatrix();
-                mesh.setMatrixAt(idx, dummy.matrix);
-
-                // 3. Color Logic
-                // Map displacement to color
-                // Audio Highs push color towards highlight
-                let mix = Math.max(0, Math.min(1, normDisp));
-                mix += (audioHighs * s);
-
-                _color.copy(_baseColor).lerp(_highlightColor, Math.max(0, Math.min(1, mix)));
-
-                // Add a little random variation
-                _color.offsetHSL(0, 0, (colorOffset - 0.5) * 0.1);
-
-                mesh.setColorAt(idx, _color);
-            }
-            mesh.instanceMatrix.needsUpdate = true;
-            mesh.instanceColor.needsUpdate = true;
         }
 
         // Initialize
@@ -986,11 +1043,6 @@
         noiseFolder.add(CONFIG, 'noiseScale', 0.001, 0.2).name('Scale');
         noiseFolder.add(CONFIG, 'noiseSpeed', 0, 0.05).name('Speed');
 
-        const interactFolder = gui.addFolder('Interaction');
-        interactFolder.add(CONFIG, 'interactionRadius', 1, 30).name('Radius');
-        interactFolder.add(CONFIG, 'interactionStrength', 0, 20).name('Strength');
-        interactFolder.add(CONFIG, 'interactionType', ['Repel', 'Attract']).name('Type');
-
         const audioFolder = gui.addFolder('Audio Reactivity');
         audioFolder.add({ startMic: () => setupAudio('Mic') }, 'startMic').name('Start Microphone');
         audioFolder.add({ playFile: () => setupAudio('File') }, 'playFile').name('Upload Audio File');
@@ -1045,18 +1097,7 @@
 
 
 
-        function updateInteraction() {
-            if (!interactionMesh) return;
 
-            raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObject(interactionMesh);
-
-            if (intersects.length > 0) {
-                interactionTarget.copy(intersects[0].point);
-            } else {
-                interactionTarget.set(10000, 10000, 10000); // Reset if off mesh
-            }
-        }
 
         // --- AUDIO REACTIVITY SETUP ---
         let audioContext, analyser, dataArray, source;
@@ -1140,8 +1181,6 @@
         function animate() {
             requestAnimationFrame(animate);
 
-            updateInteraction();
-
             // Audio Analysis
             let bass = 0, mids = 0, highs = 0;
             if (CONFIG.audioEnabled && analyser) {
@@ -1169,14 +1208,29 @@
                 // Actually, let's just pass these modifiers to updateSpheres
             }
 
+            // Update Uniforms
             if (!CONFIG.isPaused) {
                 time += CONFIG.animSpeed;
-                updateSpheres(time, bass, mids, highs);
-            } else {
-                // Even if paused, we might want interaction to work?
-                // Let's allow interaction updates even when paused for fun
-                updateSpheres(time, bass, mids, highs);
+                customUniforms.uTime.value = time;
             }
+
+            // Sync Uniforms with CONFIG
+            customUniforms.uWaveAmp.value = CONFIG.waveAmplitude;
+            customUniforms.uWaveFreqX.value = CONFIG.waveFrequencyX;
+            customUniforms.uWaveFreqZ.value = CONFIG.waveFrequencyZ;
+            customUniforms.uWaveSpeed.value = CONFIG.waveSpeed;
+            customUniforms.uNoiseStrength.value = CONFIG.noiseStrength;
+            customUniforms.uNoiseScale.value = CONFIG.noiseScale;
+            customUniforms.uNoiseSpeed.value = CONFIG.noiseSpeed;
+            customUniforms.uNoiseScale.value = CONFIG.noiseScale;
+            customUniforms.uNoiseSpeed.value = CONFIG.noiseSpeed;
+            customUniforms.uBaseColor.value.setHex(CONFIG.colors.base);
+            customUniforms.uHighlightColor.value.setHex(CONFIG.colors.highlight);
+            customUniforms.uAudioBass.value = bass * CONFIG.audioSensitivity;
+            customUniforms.uAudioMids.value = mids * CONFIG.audioSensitivity;
+            customUniforms.uAudioHighs.value = highs * CONFIG.audioSensitivity;
+            customUniforms.uClusterScale.value = CONFIG.clusterScale;
+            customUniforms.uClusterStrength.value = CONFIG.clusterStrength;
 
             controls.autoRotate = CONFIG.autoRotate;
             controls.update();
