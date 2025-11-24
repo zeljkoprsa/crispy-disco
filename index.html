@@ -75,28 +75,59 @@
             sphereSize: 0.4,
             spacing: 0.7,
             sphereDetail: 32, // Increased from 16 to 32 for smoother spheres
-            noiseScale: 0.05,
-            heightScale: 6.0,
+            jitter: 0.15, // Random position offset
             animSpeed: 0.002,
-            // New Patch Settings
-            patchRadius: 10.0,
-            patchDepth: -4.0,
-            patchNoiseStrength: 2.0,
+            isPaused: false,
+            autoRotate: true,
+            // Shape Settings
+            gridShape: 'Grid', // 'Grid', 'Sphere', 'Cube'
+            particleShape: 'Sphere', // 'Sphere', 'Cube', 'Plus'
+            shapeSize: 30.0, // Radius for sphere, Side for cube
+            // Wave Settings
+            waveAmplitude: 2.0,
+            waveFrequencyX: 0.1,
+            waveFrequencyZ: 0.1,
+            waveSpeed: 0.01,
+            // Noise Settings
+            noiseStrength: 2.0,
+            noiseScale: 0.05,
+            noiseSpeed: 0.005,
+            // Interaction Settings
+            interactionRadius: 8.0,
+            interactionStrength: 5.0,
+            interactionType: 'Repel', // 'Repel', 'Attract'
+            // Audio Settings
+            audioEnabled: false,
+            audioSensitivity: 1.0,
+            audioSource: 'Mic', // 'Mic', 'File'
+            // Environment
+            fogDensity: 0.02,
+            showFloor: false,
             colors: {
-                purple: 0xcbbae8, // Field Color
-                red: 0x8332a9,    // Patch Color
+                base: 0xcbbae8,    // Low points
+                highlight: 0x8332a9, // High points
                 bg: new THREE.Color(0x050505)
             },
             // Export settings
             exportDuration: 10, // seconds
+            exportFormat: 'webm', // 'webm' or 'mp4'
             // Post-Processing
             bloomStrength: 0,
             bloomRadius: 0.4,
             bloomThreshold: 0.1,
             enableBloom: true,
             // Cluster Randomization
-            clusterScale: 0.1, // Controls size of clusters (lower = larger clusters)
-            clusterStrength: 0.15 // 15% variation
+            clusterScale: 0.02, // Controls size of clusters (lower = larger clusters)
+            clusterStrength: 0.5, // 15% variation
+            // Material
+            materialType: 'Metal'
+        };
+
+        const MATERIALS = {
+            'Metal': { roughness: 0.2, metalness: 0.6 },
+            'Plastic': { roughness: 0.5, metalness: 0.0 },
+            'Clay': { roughness: 0.9, metalness: 0.0 },
+            'Ceramic': { roughness: 0.1, metalness: 0.1 }
         };
 
         // Scene Management Variables
@@ -124,6 +155,16 @@
                             position: redLight.position.clone(),
                             intensity: redLight.intensity,
                             distance: redLight.distance
+                        },
+                        ambient: {
+                            intensity: ambientLight.intensity,
+                            color: ambientLight.color.getHex(),
+                            groundColor: ambientLight.groundColor.getHex()
+                        },
+                        rim: {
+                            position: rimLight.position.clone(),
+                            intensity: rimLight.intensity,
+                            color: rimLight.color.getHex()
                         }
                     }
                 };
@@ -147,7 +188,54 @@
 
                 // 1. Restore Config
                 Object.assign(CONFIG, data.config);
-                // Be careful with nested objects like colors if they were overwritten
+
+                // Migration: Old Crater Colors -> New Wave Colors
+                if (CONFIG.colors.red !== undefined) {
+                    CONFIG.colors.highlight = CONFIG.colors.red;
+                    delete CONFIG.colors.red;
+                }
+                if (CONFIG.colors.purple !== undefined) {
+                    CONFIG.colors.base = CONFIG.colors.purple;
+                    delete CONFIG.colors.purple;
+                }
+                // Migration: Ensure Wave Defaults
+                if (CONFIG.waveAmplitude === undefined) {
+                    CONFIG.waveAmplitude = 2.0;
+                    CONFIG.waveFrequencyX = 0.2;
+                    CONFIG.waveFrequencyZ = 0.2;
+                    CONFIG.waveSpeed = 1.0;
+                }
+                // Migration: Ensure Noise Defaults
+                if (CONFIG.noiseStrength === undefined) {
+                    CONFIG.noiseStrength = 0.0;
+                    CONFIG.noiseScale = 0.1;
+                    CONFIG.noiseSpeed = 0.5;
+                }
+                // Migration: Ensure Shape Defaults
+                if (CONFIG.gridShape === undefined) {
+                    CONFIG.gridShape = 'Grid';
+                    CONFIG.shapeSize = 30.0;
+                }
+                if (CONFIG.particleShape === undefined) CONFIG.particleShape = 'Sphere';
+
+                // Migration: Ensure Interaction Defaults
+                if (CONFIG.interactionRadius === undefined) CONFIG.interactionRadius = 8.0;
+                if (CONFIG.interactionStrength === undefined) CONFIG.interactionStrength = 5.0;
+                if (CONFIG.interactionType === undefined) CONFIG.interactionType = 'Repel';
+
+                // Migration: Ensure Audio Defaults
+                if (CONFIG.audioEnabled === undefined) CONFIG.audioEnabled = false;
+                if (CONFIG.audioSensitivity === undefined) CONFIG.audioSensitivity = 1.0;
+                if (CONFIG.audioSource === undefined) CONFIG.audioSource = 'Mic';
+
+                // Migration: Ensure Control Defaults
+                if (CONFIG.isPaused === undefined) CONFIG.isPaused = false;
+                if (CONFIG.autoRotate === undefined) CONFIG.autoRotate = true;
+
+                // Migration: Ensure Environment Defaults
+                if (CONFIG.fogDensity === undefined) CONFIG.fogDensity = 0.02;
+                if (CONFIG.showFloor === undefined) CONFIG.showFloor = false;
+
                 // Ensure colors are valid numbers/objects
 
                 // 2. Restore Camera
@@ -165,6 +253,18 @@
                     redLight.position.copy(data.lights.point.position);
                     redLight.intensity = data.lights.point.intensity;
                     redLight.distance = data.lights.point.distance;
+
+                    if (data.lights.ambient) {
+                        ambientLight.intensity = data.lights.ambient.intensity;
+                        ambientLight.color.setHex(data.lights.ambient.color);
+                        ambientLight.groundColor.setHex(data.lights.ambient.groundColor);
+                    }
+
+                    if (data.lights.rim) {
+                        rimLight.position.copy(data.lights.rim.position);
+                        rimLight.intensity = data.lights.rim.intensity;
+                        rimLight.color.setHex(data.lights.rim.color);
+                    }
                 }
 
                 // 4. Update GUI to reflect new values
@@ -178,6 +278,9 @@
                     // Force background update
                     scene.background = new THREE.Color(CONFIG.colors.bg);
                     scene.fog.color = new THREE.Color(CONFIG.colors.bg);
+                    scene.fog.density = CONFIG.fogDensity;
+
+                    floor.visible = CONFIG.showFloor;
                 }, 50);
             },
 
@@ -195,12 +298,29 @@
         // Setup Scene
         const scene = new THREE.Scene();
         scene.background = CONFIG.colors.bg;
-        scene.fog = new THREE.FogExp2(CONFIG.colors.bg, 0.02);
+        scene.fog = new THREE.FogExp2(CONFIG.colors.bg, CONFIG.fogDensity);
+
+        // Floor Plane
+        const floorGeo = new THREE.PlaneGeometry(400, 400);
+        const floorMat = new THREE.MeshStandardMaterial({
+            color: 0x111111,
+            roughness: 0.1,
+            metalness: 0.5
+        });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.position.y = -10; // Below the lowest wave point
+        floor.receiveShadow = true;
+        floor.visible = CONFIG.showFloor;
+        scene.add(floor);
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
         camera.position.set(20, 15, 20);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            powerPreference: 'high-performance'
+        });
         renderer.setSize(window.innerWidth, window.innerHeight);
         // Added Pixel Ratio for sharp rendering on high-DPI screens (Retina displays)
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -240,10 +360,12 @@
         dirLight.shadow.mapSize.height = 2048;
         dirLight.shadow.camera.near = 0.5;
         dirLight.shadow.camera.far = 150;
-        dirLight.shadow.camera.left = -50;
-        dirLight.shadow.camera.right = 50;
-        dirLight.shadow.camera.top = 50;
-        dirLight.shadow.camera.bottom = -50;
+        dirLight.shadow.camera.near = 0.5;
+        dirLight.shadow.camera.far = 150;
+        dirLight.shadow.camera.left = -100;
+        dirLight.shadow.camera.right = 100;
+        dirLight.shadow.camera.top = 100;
+        dirLight.shadow.camera.bottom = -100;
         dirLight.shadow.bias = -0.0005;
         scene.add(dirLight);
 
@@ -262,12 +384,36 @@
         // Variables that need to be accessed globally for regeneration
         let mesh;
         let positions = [];
+        let interactionMesh; // Invisible mesh for raycasting
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let interactionTarget = new THREE.Vector3(10000, 10000, 10000); // Far away initially
+
+        // Mouse Move Handler
+        window.addEventListener('mousemove', (event) => {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        });
         const simplex = new SimplexNoise();
         const dummy = new THREE.Object3D();
         const _color = new THREE.Color();
         // Helper color objects for the GUI
-        const _patchColor = new THREE.Color();
-        const _fieldColor = new THREE.Color();
+        const _baseColor = new THREE.Color();
+        const _highlightColor = new THREE.Color();
+
+        // Helper class for GUI colors
+        class ColorGUIHelper {
+            constructor(object, prop) {
+                this.object = object;
+                this.prop = prop;
+            }
+            get value() {
+                return `#${this.object[this.prop].getHexString()}`;
+            }
+            set value(hexString) {
+                this.object[this.prop].set(hexString);
+            }
+        }
 
         // Recording Logic
         function exportVideo() {
@@ -285,20 +431,37 @@
             // Capture the stream at 30fps
             const stream = canvas.captureStream(30);
 
-            // Prefer high quality codecs, try MP4 first for better compatibility
-            const mimeTypes = [
-                'video/mp4;codecs=h264',
-                'video/mp4',
-                'video/webm;codecs=vp9',
-                'video/webm;codecs=vp8',
-                'video/webm'
-            ];
-            const mimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'video/webm';
+            // Determine Mime Type based on selection and support
+            let mimeType = '';
+            if (CONFIG.exportFormat === 'mp4') {
+                if (MediaRecorder.isTypeSupported('video/mp4;codecs=h264')) {
+                    mimeType = 'video/mp4;codecs=h264';
+                } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+                    mimeType = 'video/mp4';
+                } else {
+                    alert("MP4 export is not supported by your browser. Falling back to WebM.");
+                    CONFIG.exportFormat = 'webm'; // Fallback
+                }
+            }
 
-            // Determine extension
-            const extension = mimeType.includes('mp4') ? 'mp4' : 'webm';
+            // If still empty (webm selected or fallback)
+            if (!mimeType) {
+                const webmTypes = [
+                    'video/webm;codecs=vp9',
+                    'video/webm;codecs=vp8',
+                    'video/webm'
+                ];
+                mimeType = webmTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+            }
 
-            console.log(`Exporting with mimeType: ${mimeType}`);
+            if (!mimeType) {
+                alert("No supported video mime type found.");
+                statusEl.style.display = 'none';
+                return;
+            }
+
+            const extension = CONFIG.exportFormat === 'mp4' ? 'mp4' : 'webm';
+            console.log(`Exporting ${CONFIG.exportFormat.toUpperCase()} with mimeType: ${mimeType}`);
 
             let recorder;
             try {
@@ -330,35 +493,24 @@
                 const blob = new Blob(chunks, { type: mimeType });
                 console.log(`Exporting video: ${blob.size} bytes, type: ${mimeType}`);
 
-                // Workaround for file:// protocol: Use Data URI instead of Blob URL
-                // Blob URLs (blob:null/...) often fail to download in Chrome when running locally
-                const reader = new FileReader();
-                reader.onload = function (e) {
-                    const a = document.createElement('a');
-                    a.href = e.target.result; // Data URI
+                // Use URL.createObjectURL for better performance and reliability
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
 
-                    // Sanitize filename
-                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                    a.download = `sphere-field-demo-${timestamp}.${extension}`;
+                // Sanitize filename
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                a.download = `sphere-field-demo-${timestamp}.${extension}`;
 
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                };
-                reader.readAsDataURL(blob);
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                // Cleanup
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
             };
 
             recorder.start();
-
-            // Warn if running on file://
-            if (window.location.protocol === 'file:') {
-                // Create a visible warning on the UI
-                const warning = document.createElement('div');
-                warning.style.cssText = 'position:absolute; top:10px; left:50%; transform:translateX(-50%); background:rgba(255,0,0,0.8); color:white; padding:10px; border-radius:5px; pointer-events:none; z-index:9999; font-family:sans-serif; text-align:center;';
-                warning.innerHTML = '⚠️ Running on file:// protocol.<br>If download fails, please use a local server.';
-                document.body.appendChild(warning);
-                setTimeout(() => warning.remove(), 5000);
-            }
 
             // Stop after exportDuration
             setTimeout(() => {
@@ -378,11 +530,80 @@
                 positions = [];
             }
 
+            // Cleanup interaction mesh
+            if (interactionMesh) {
+                scene.remove(interactionMesh);
+                interactionMesh.geometry.dispose();
+                interactionMesh.material.dispose();
+                interactionMesh = null;
+            }
+
+            // Create Interaction Mesh (Invisible)
+            let interactionGeo;
+            if (CONFIG.gridShape === 'Grid') {
+                // Plane
+                const size = CONFIG.sphereCount * CONFIG.spacing;
+                interactionGeo = new THREE.PlaneGeometry(size, size);
+                interactionGeo.rotateX(-Math.PI / 2); // Horizontal
+            } else if (CONFIG.gridShape === 'Sphere') {
+                interactionGeo = new THREE.SphereGeometry(CONFIG.shapeSize, 32, 32);
+            } else if (CONFIG.gridShape === 'Cube') {
+                const s = CONFIG.shapeSize;
+                interactionGeo = new THREE.BoxGeometry(s, s, s);
+            }
+
+            if (interactionGeo) {
+                const interactionMat = new THREE.MeshBasicMaterial({ visible: false }); // Invisible
+                interactionMesh = new THREE.Mesh(interactionGeo, interactionMat);
+                scene.add(interactionMesh);
+            }
+
             // Use sphereDetail config here
-            const geometry = new THREE.SphereGeometry(CONFIG.sphereSize, CONFIG.sphereDetail, CONFIG.sphereDetail);
+            let geometry;
+            const s = CONFIG.sphereSize;
+
+            if (CONFIG.particleShape === 'Cube') {
+                geometry = new THREE.BoxGeometry(s, s, s);
+            } else if (CONFIG.particleShape === 'Plus') {
+                const shape = new THREE.Shape();
+                const t = s * 0.3; // thickness
+                const h = s; // half size roughly
+
+                shape.moveTo(t, h);
+                shape.lineTo(h, h);
+                shape.lineTo(h, -h);
+                shape.lineTo(t, -h);
+                shape.lineTo(t, -s * 2); // Long tail? No, let's make it symmetric
+                // Actually, let's draw a proper cross
+                // Center 0,0. Size s.
+                // Top arm
+                shape.moveTo(-t, s);
+                shape.lineTo(t, s);
+                shape.lineTo(t, t);
+                // Right arm
+                shape.lineTo(s, t);
+                shape.lineTo(s, -t);
+                shape.lineTo(t, -t);
+                // Bottom arm
+                shape.lineTo(t, -s);
+                shape.lineTo(-t, -s);
+                shape.lineTo(-t, -t);
+                // Left arm
+                shape.lineTo(-s, -t);
+                shape.lineTo(-s, t);
+                shape.lineTo(-t, t);
+
+                geometry = new THREE.ShapeGeometry(shape);
+            } else {
+                // Default Sphere
+                geometry = new THREE.SphereGeometry(s, CONFIG.sphereDetail, CONFIG.sphereDetail);
+            }
+
+            const matProps = MATERIALS[CONFIG.materialType] || MATERIALS['Metal'];
             const material = new THREE.MeshStandardMaterial({
-                roughness: 0.2, // Lower roughness for more reflections
-                metalness: 0.6, // Higher metalness for sci-fi look
+                roughness: matProps.roughness,
+                metalness: matProps.metalness,
+                side: THREE.DoubleSide // Ensure 2D shapes are visible from both sides
             });
 
             const count = CONFIG.sphereCount * CONFIG.sphereCount;
@@ -392,79 +613,194 @@
             scene.add(mesh);
 
             let index = 0;
-            const offset = (CONFIG.sphereCount * CONFIG.spacing) / 2;
 
-            for (let x = 0; x < CONFIG.sphereCount; x++) {
-                for (let z = 0; z < CONFIG.sphereCount; z++) {
-                    // Calculate grid position centered around 0,0
-                    const posX = (x * CONFIG.spacing) - offset;
-                    const posZ = (z * CONFIG.spacing) - offset;
+            if (CONFIG.gridShape === 'Grid') {
+                const offset = (CONFIG.sphereCount * CONFIG.spacing) / 2;
+                for (let x = 0; x < CONFIG.sphereCount; x++) {
+                    for (let z = 0; z < CONFIG.sphereCount; z++) {
+                        const posX = (x * CONFIG.spacing) - offset;
+                        const posZ = (z * CONFIG.spacing) - offset;
 
-                    // Add some random jitter to X/Z so it looks organic, not perfectly gridded
-                    const jitter = 0.15;
-                    const finalX = posX + (Math.random() * jitter - jitter / 2);
-                    const finalZ = posZ + (Math.random() * jitter - jitter / 2);
+                        const jitter = CONFIG.jitter;
+                        const finalX = posX + (Math.random() * jitter - jitter / 2);
+                        const finalZ = posZ + (Math.random() * jitter - jitter / 2);
 
-                    // Store a stable random value (colorOffset) here
+                        positions.push({
+                            baseX: finalX,
+                            baseY: 0,
+                            baseZ: finalZ,
+                            normX: 0,
+                            normY: 1,
+                            normZ: 0,
+                            idx: index,
+                            colorOffset: Math.random()
+                        });
+                        index++;
+                    }
+                }
+            } else if (CONFIG.gridShape === 'Sphere') {
+                // Fibonacci Sphere
+                for (let i = 0; i < count; i++) {
+                    const phi = Math.acos(1 - 2 * (i + 0.5) / count);
+                    const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+
+                    const x = Math.cos(theta) * Math.sin(phi);
+                    const y = Math.cos(phi);
+                    const z = Math.sin(theta) * Math.sin(phi);
+
+                    const r = CONFIG.shapeSize;
+
+                    // Apply Cartesian Jitter to match Grid behavior
+                    const jX = (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
+                    const jY = (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
+                    const jZ = (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
+
                     positions.push({
-                        x: finalX,
-                        z: finalZ,
+                        baseX: (x * r) + jX,
+                        baseY: (y * r) + jY,
+                        baseZ: (z * r) + jZ,
+                        normX: x,
+                        normY: y,
+                        normZ: z,
                         idx: index,
                         colorOffset: Math.random()
                     });
                     index++;
                 }
+            } else if (CONFIG.gridShape === 'Cube') {
+                // Distribute points on 6 faces
+                const side = CONFIG.shapeSize;
+                const half = side / 2;
+                const pointsPerFace = Math.floor(count / 6);
+                const gridDim = Math.floor(Math.sqrt(pointsPerFace));
+
+                // Use (gridDim - 1) to ensure points reach the edges (inclusive)
+                // If gridDim <= 1, fallback to center
+                const step = gridDim > 1 ? side / (gridDim - 1) : 0;
+                const offset = side / 2;
+
+                const faces = [
+                    { u: 'x', v: 'y', w: 'z', wVal: half, n: { x: 0, y: 0, z: 1 } },  // Front
+                    { u: 'x', v: 'y', w: 'z', wVal: -half, n: { x: 0, y: 0, z: -1 } }, // Back
+                    { u: 'z', v: 'y', w: 'x', wVal: half, n: { x: 1, y: 0, z: 0 } },  // Right
+                    { u: 'z', v: 'y', w: 'x', wVal: -half, n: { x: -1, y: 0, z: 0 } }, // Left
+                    { u: 'x', v: 'z', w: 'y', wVal: half, n: { x: 0, y: 1, z: 0 } },  // Top
+                    { u: 'x', v: 'z', w: 'y', wVal: -half, n: { x: 0, y: -1, z: 0 } }  // Bottom
+                ];
+
+                for (const face of faces) {
+                    for (let i = 0; i < gridDim; i++) {
+                        for (let j = 0; j < gridDim; j++) {
+                            // Calculate position. If gridDim=1, pos is 0 (center)
+                            const uPos = gridDim > 1 ? (i * step) - offset : 0;
+                            const vPos = gridDim > 1 ? (j * step) - offset : 0;
+
+                            // Apply Jitter
+                            const jU = uPos + (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
+                            const jV = vPos + (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
+                            // Also jitter the depth slightly? No, keep faces flat unless noise is added.
+                            // Actually, for consistency, maybe jitter depth too? 
+                            // Let's jitter depth too so it's a "fuzzy cube" if jitter is high
+                            const jW = face.wVal + (Math.random() * CONFIG.jitter - CONFIG.jitter / 2);
+
+                            const pos = { x: 0, y: 0, z: 0 };
+                            pos[face.u] = jU;
+                            pos[face.v] = jV;
+                            pos[face.w] = jW;
+
+                            positions.push({
+                                baseX: pos.x,
+                                baseY: pos.y,
+                                baseZ: pos.z,
+                                normX: face.n.x,
+                                normY: face.n.y,
+                                normZ: face.n.z,
+                                idx: index,
+                                colorOffset: Math.random()
+                            });
+                            index++;
+                        }
+                    }
+                }
             }
 
-            updateSpheres(0); // Initial placement
-
-            // Hide loading text
+            updateSpheres(0);
             document.getElementById('loading').style.opacity = 0;
         }
 
-        function updateSpheres(time) {
+        function updateSpheres(time, audioBass = 0, audioMids = 0, audioHighs = 0) {
             if (!mesh) return;
 
             // Update helper colors from config numbers
-            _patchColor.setHex(CONFIG.colors.red);
-            _fieldColor.setHex(CONFIG.colors.purple);
+            _baseColor.setHex(CONFIG.colors.base);
+            _highlightColor.setHex(CONFIG.colors.highlight);
+
+            // Audio Modulation
+            const s = CONFIG.audioSensitivity;
+            const modAmp = CONFIG.waveAmplitude + (audioBass * 5.0 * s); // Bass drives amplitude
+            const modNoise = CONFIG.noiseStrength + (audioMids * 5.0 * s); // Mids drive noise
+            // Highs will drive color brightness/highlight mix
 
             for (let i = 0; i < positions.length; i++) {
-                const { x, z, idx, colorOffset } = positions[i];
+                const { baseX, baseY, baseZ, normX, normY, normZ, idx, colorOffset } = positions[i];
 
-                // 1. Generate Height (Y)
-                // Base noise for the rolling hills
-                let noise = simplex.noise3D(x * CONFIG.noiseScale, z * CONFIG.noiseScale, time * 0.1);
+                // 1. Generate Displacement using Wave Logic
+                // Use base positions for wave inputs
 
-                // Distance from center for the "crater" effect
-                const dist = Math.sqrt(x * x + z * z);
+                const t = time * CONFIG.waveSpeed;
+                const waveX = Math.sin(baseX * CONFIG.waveFrequencyX + t);
+                const waveZ = Math.cos(baseZ * CONFIG.waveFrequencyZ + t);
+                // Add Y contribution for 3D shapes
+                const waveY = Math.sin(baseY * CONFIG.waveFrequencyX + t);
 
-                // Dynamic Crater Logic based on CONFIG
-                // We define an inner "full depth" radius and an outer "surface" radius
-                // to create a slope.
-                const falloff = 8.0; // Width of the slope
-                const innerRadius = Math.max(0, CONFIG.patchRadius - (falloff / 2));
+                let displacement = (waveX + waveZ + waveY) * modAmp;
 
-                // Calculate blend factor (0 = center/deep, 1 = outside/surface)
-                let craterFactor = Math.min(1, Math.max(0, (dist - innerRadius) / falloff));
+                // Apply Noise
+                if (modNoise > 0) {
+                    const n = simplex.noise3D(baseX * CONFIG.noiseScale, baseZ * CONFIG.noiseScale, time * CONFIG.noiseSpeed);
+                    displacement += n * modNoise;
+                }
 
-                let y = (noise * 2.5) + (1.0 - craterFactor) * CONFIG.patchDepth;
+                // Apply Interaction Force
+                const dist = interactionTarget.distanceToSquared(new THREE.Vector3(baseX, baseY, baseZ)); // Approx distance to base
+                // Actually, distanceToSquared is faster. Radius squared.
+                const rSq = CONFIG.interactionRadius * CONFIG.interactionRadius;
 
-                // Add detail noise for small variations
-                y += simplex.noise3D(x * 0.2, z * 0.2, time) * 0.2;
+                if (dist < rSq) {
+                    // Calculate falloff (1 at center, 0 at edge)
+                    const falloff = Math.pow(1.0 - (dist / rSq), 2);
+                    const force = falloff * CONFIG.interactionStrength;
+
+                    if (CONFIG.interactionType === 'Repel') {
+                        displacement += force;
+                    } else {
+                        displacement -= force;
+                    }
+                }
 
                 // 2. Position Object
+                // finalPos = basePos + (normal * displacement)
+                const x = baseX + (normX * displacement);
+                const y = baseY + (normY * displacement);
+                const z = baseZ + (normZ * displacement);
+
                 dummy.position.set(x, y, z);
 
-                // Scale spheres slightly based on height/noise for organic feel
-                let scale = 1.0 + (noise * 0.2);
+                // Orient sphere to normal (optional, but good for non-spherical shapes if we used non-spheres)
+                // dummy.lookAt(x + normX, y + normY, z + normZ);
+
+                // Scale spheres slightly based on displacement
+                // Scale spheres slightly based on displacement
+                const totalAmp = (modAmp * 3) + modNoise + 0.001;
+                const normDisp = (displacement / totalAmp) + 0.5; // 0 to 1 roughly
+
+                let scale = 1.0 + (normDisp * 0.5);
+
+                // Audio Highs affect scale jitter
+                scale += (audioHighs * s * Math.random());
 
                 // Apply Cluster Randomization
-                // Use a different noise offset/scale for clusters so it doesn't match the terrain exactly
-                // We use simplex.noise2D(x, z) which returns -1 to 1.
-                // We map it to 1.0 +/- clusterStrength
                 const clusterNoise = simplex.noise2D(x * CONFIG.clusterScale + 100, z * CONFIG.clusterScale + 100);
-                // clusterNoise is -1 to 1. We want to vary scale by +/- strength.
                 scale *= (1.0 + (clusterNoise * CONFIG.clusterStrength));
 
                 dummy.scale.set(scale, scale, scale);
@@ -473,20 +809,15 @@
                 mesh.setMatrixAt(idx, dummy.matrix);
 
                 // 3. Color Logic
-                // Reproduce the image: Red in the center crater, Purple everywhere else
-                // We use a slightly noisy threshold so the border isn't a perfect circle
+                // Map displacement to color
+                // Audio Highs push color towards highlight
+                let mix = Math.max(0, Math.min(1, normDisp));
+                mix += (audioHighs * s);
 
-                const colorNoise = simplex.noise2D(x * 0.1, z * 0.1) * CONFIG.patchNoiseStrength;
+                _color.copy(_baseColor).lerp(_highlightColor, Math.max(0, Math.min(1, mix)));
 
-                if (dist + colorNoise < CONFIG.patchRadius) {
-                    // Inner Crater (Red)
-                    const rVar = colorOffset * 0.1;
-                    _color.copy(_patchColor).offsetHSL(0, 0, rVar - 0.05);
-                } else {
-                    // Outer Field (Purple)
-                    const pVar = (y * 0.05);
-                    _color.copy(_fieldColor).offsetHSL(0.02, 0, pVar);
-                }
+                // Add a little random variation
+                _color.offsetHSL(0, 0, (colorOffset - 0.5) * 0.1);
 
                 mesh.setColorAt(idx, _color);
             }
@@ -532,8 +863,9 @@
         savesFolder.add(SCENE_MANAGER, 'loadSelected').name('Load Selected');
         savesFolder.add(SCENE_MANAGER, 'deleteScene').name('Delete Selected');
 
-
         const simFolder = gui.addFolder('Simulation');
+        simFolder.add(CONFIG, 'isPaused').name('Pause Animation');
+        simFolder.add(CONFIG, 'autoRotate').name('Auto Rotate');
         simFolder.add(CONFIG, 'sphereCount', 10, 200, 1)
             .name('Grid Size')
             .onFinishChange(() => {
@@ -542,7 +874,14 @@
             });
 
         simFolder.add(CONFIG, 'sphereSize', 0.1, 1.5)
-            .name('Sphere Size')
+            .name('Particle Size')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        simFolder.add(CONFIG, 'particleShape', ['Sphere', 'Cube', 'Plus'])
+            .name('Particle Shape')
             .onFinishChange(() => {
                 document.getElementById('loading').style.opacity = 1;
                 setTimeout(initSpheres, 50);
@@ -564,14 +903,105 @@
                 setTimeout(initSpheres, 50);
             });
 
+        simFolder.add(CONFIG, 'jitter', 0, 1.0)
+            .name('Grid Jitter')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        simFolder.add(CONFIG, 'gridShape', ['Grid', 'Sphere', 'Cube'])
+            .name('Shape')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        simFolder.add(CONFIG, 'shapeSize', 5, 100)
+            .name('Shape Size')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
+        simFolder.add({
+            resetToPerfect: () => {
+                CONFIG.jitter = 0;
+                CONFIG.waveAmplitude = 0;
+                CONFIG.noiseStrength = 0;
+                // Keep interaction settings as is, or reset? Let's keep them.
+
+                // Update GUI controllers
+                gui.controllersRecursive().forEach(c => c.updateDisplay());
+                initSpheres();
+            }
+        }, 'resetToPerfect').name('Reset to Perfect');
+
+        const fixOverlap = () => {
+            // Calculate minimum safe spacing
+            // Diameter = sphereSize * 2
+            // Max Scale = 1.0 + (clusterStrength) + (noise * 0.2) -> roughly 1.0 + 0.15 + 0.2 = 1.35
+            // Let's be safe and assume max scale is around 1.4
+            const maxScale = 1.0 + CONFIG.clusterStrength + 0.2;
+            const maxDiameter = (CONFIG.sphereSize * 2) * maxScale;
+
+            // Jitter adds +/- jitter/2 to position. Max spread between two points is jitter.
+            // So we need spacing > maxDiameter + jitter
+
+            const safeSpacing = maxDiameter + CONFIG.jitter + 0.05; // 0.05 buffer
+
+            CONFIG.spacing = safeSpacing;
+
+            // Update GUI
+            // We need to find the controller for spacing. 
+            // Since we don't have a direct reference easily without iterating, 
+            // we can just update the display of all controllers in this folder.
+            simFolder.controllers.forEach(c => c.updateDisplay());
+
+            initSpheres();
+            alert(`Spacing adjusted to ${safeSpacing.toFixed(3)} to prevent overlap.`);
+        };
+
+        simFolder.add({ fixOverlap }, 'fixOverlap').name('Auto-Fix Overlap');
+
+        simFolder.add(CONFIG, 'materialType', Object.keys(MATERIALS))
+            .name('Material')
+            .onFinishChange(() => {
+                document.getElementById('loading').style.opacity = 1;
+                setTimeout(initSpheres, 50);
+            });
+
         simFolder.add(CONFIG, 'animSpeed', 0, 0.01).name('Anim Speed');
 
-        const patchFolder = gui.addFolder('Crater / Patch Controls');
-        patchFolder.add(CONFIG, 'patchRadius', 1, 30).name('Radius');
-        patchFolder.add(CONFIG, 'patchDepth', -15, 15).name('Depth');
-        patchFolder.add(CONFIG, 'patchNoiseStrength', 0, 10).name('Edge Noise');
-        patchFolder.addColor(CONFIG.colors, 'red').name('Patch Color');
-        patchFolder.addColor(CONFIG.colors, 'purple').name('Field Color');
+        const waveFolder = gui.addFolder('Wave Controls');
+        waveFolder.add(CONFIG, 'waveAmplitude', 0, 10).name('Amplitude');
+        waveFolder.add(CONFIG, 'waveFrequencyX', 0, 1.0).name('Frequency X');
+        waveFolder.add(CONFIG, 'waveFrequencyZ', 0, 1.0).name('Frequency Z');
+        waveFolder.add(CONFIG, 'waveSpeed', 0, 5.0).name('Speed');
+        waveFolder.addColor(CONFIG.colors, 'base').name('Base Color');
+        waveFolder.addColor(CONFIG.colors, 'highlight').name('Highlight Color');
+
+        const noiseFolder = gui.addFolder('Noise Controls');
+        noiseFolder.add(CONFIG, 'noiseStrength', 0, 10).name('Strength');
+        noiseFolder.add(CONFIG, 'noiseScale', 0.001, 0.2).name('Scale');
+        noiseFolder.add(CONFIG, 'noiseSpeed', 0, 0.05).name('Speed');
+
+        const interactFolder = gui.addFolder('Interaction');
+        interactFolder.add(CONFIG, 'interactionRadius', 1, 30).name('Radius');
+        interactFolder.add(CONFIG, 'interactionStrength', 0, 20).name('Strength');
+        interactFolder.add(CONFIG, 'interactionType', ['Repel', 'Attract']).name('Type');
+
+        const audioFolder = gui.addFolder('Audio Reactivity');
+        audioFolder.add({ startMic: () => setupAudio('Mic') }, 'startMic').name('Start Microphone');
+        audioFolder.add({ playFile: () => setupAudio('File') }, 'playFile').name('Upload Audio File');
+        audioFolder.add({ stopAudio }, 'stopAudio').name('Stop Audio');
+        audioFolder.add(CONFIG, 'audioSensitivity', 0, 5.0).name('Sensitivity');
+
+        const envFolder = gui.addFolder('Environment');
+        envFolder.add(CONFIG, 'fogDensity', 0, 0.1).name('Fog Density')
+            .onChange(v => scene.fog.density = v);
+        envFolder.add(CONFIG, 'showFloor').name('Show Floor')
+            .onChange(v => floor.visible = v);
 
         const sunFolder = gui.addFolder('Sun Light (Directional)');
         sunFolder.add(dirLight.position, 'x', -100, 100).name('Pos X');
@@ -579,7 +1009,19 @@
         sunFolder.add(dirLight.position, 'z', -100, 100).name('Pos Z');
         sunFolder.add(dirLight, 'intensity', 0, 3).name('Intensity');
 
-        const redFolder = gui.addFolder('Crater Light (Point)');
+        const ambientFolder = gui.addFolder('Ambient Light');
+        ambientFolder.add(ambientLight, 'intensity', 0, 2).name('Intensity');
+        ambientFolder.addColor(new ColorGUIHelper(ambientLight, 'color'), 'value').name('Sky Color');
+        ambientFolder.addColor(new ColorGUIHelper(ambientLight, 'groundColor'), 'value').name('Ground Color');
+
+        const rimFolder = gui.addFolder('Rim Light (Spot)');
+        rimFolder.add(rimLight.position, 'x', -50, 50).name('Pos X');
+        rimFolder.add(rimLight.position, 'y', 0, 50).name('Pos Y');
+        rimFolder.add(rimLight.position, 'z', -50, 50).name('Pos Z');
+        rimFolder.add(rimLight, 'intensity', 0, 5).name('Intensity');
+        rimFolder.addColor(new ColorGUIHelper(rimLight, 'color'), 'value').name('Color');
+
+        const redFolder = gui.addFolder('Point Light');
         redFolder.add(redLight.position, 'x', -50, 50).name('Pos X');
         redFolder.add(redLight.position, 'y', 0, 50).name('Pos Y');
         redFolder.add(redLight.position, 'z', -50, 50).name('Pos Z');
@@ -588,6 +1030,7 @@
 
         const exportFolder = gui.addFolder('Export');
         exportFolder.add(CONFIG, 'exportDuration', 1, 60, 1).name('Duration (sec)');
+        exportFolder.add(CONFIG, 'exportFormat', ['webm', 'mp4']).name('Format');
         exportFolder.add({ exportVideo }, 'exportVideo').name('Record Video');
 
         const bloomFolder = gui.addFolder('Post-Processing (Bloom)');
@@ -600,16 +1043,145 @@
         clusterFolder.add(CONFIG, 'clusterScale', 0.01, 0.5).name('Cluster Scale (Size)');
         clusterFolder.add(CONFIG, 'clusterStrength', 0, 0.5).name('Variation Strength');
 
+
+
+        function updateInteraction() {
+            if (!interactionMesh) return;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(interactionMesh);
+
+            if (intersects.length > 0) {
+                interactionTarget.copy(intersects[0].point);
+            } else {
+                interactionTarget.set(10000, 10000, 10000); // Reset if off mesh
+            }
+        }
+
+        // --- AUDIO REACTIVITY SETUP ---
+        let audioContext, analyser, dataArray, source;
+        let audioEl; // For file playback
+
+        async function setupAudio(type) {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+
+            // Cleanup old source
+            if (source) {
+                source.disconnect();
+                if (audioEl) {
+                    audioEl.pause();
+                    audioEl = null;
+                }
+            }
+
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256; // 128 bins
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+            if (type === 'Mic') {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    source = audioContext.createMediaStreamSource(stream);
+                    source.connect(analyser);
+                    alert("Microphone connected! Speak or clap to see effects.");
+                } catch (err) {
+                    console.error("Mic Error:", err);
+                    alert("Could not access microphone. Check permissions.");
+                }
+            } else if (type === 'File') {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = 'audio/*';
+                input.onchange = (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        const url = URL.createObjectURL(file);
+                        audioEl = new Audio(url);
+                        audioEl.play();
+                        audioEl.loop = true;
+                        source = audioContext.createMediaElementSource(audioEl);
+                        source.connect(analyser);
+                        source.connect(audioContext.destination); // Play to speakers
+                    }
+                };
+                input.click();
+            }
+
+            CONFIG.audioEnabled = true;
+        }
+
+        function stopAudio() {
+            if (source) {
+                source.disconnect();
+                // If it's a media stream (Mic), stop the tracks to release the mic
+                if (source.mediaStream) {
+                    source.mediaStream.getTracks().forEach(track => track.stop());
+                }
+                source = null;
+            }
+
+            if (audioEl) {
+                audioEl.pause();
+                audioEl.src = "";
+                audioEl = null;
+            }
+
+            CONFIG.audioEnabled = false;
+            // Reset modulation values in next frame automatically by logic
+        }
+
         // Animation Loop
         let time = 0;
         function animate() {
             requestAnimationFrame(animate);
 
-            time += CONFIG.animSpeed;
-            updateSpheres(time);
+            updateInteraction();
 
+            // Audio Analysis
+            let bass = 0, mids = 0, highs = 0;
+            if (CONFIG.audioEnabled && analyser) {
+                analyser.getByteFrequencyData(dataArray);
+
+                // Simple frequency bands (fftSize 256 -> 128 bins)
+                // 0-10: Bass
+                // 11-60: Mids
+                // 61-127: Highs
+
+                const getAvg = (start, end) => {
+                    let sum = 0;
+                    for (let i = start; i <= end; i++) sum += dataArray[i];
+                    return sum / (end - start + 1);
+                };
+
+                bass = getAvg(0, 10) / 255; // 0.0 to 1.0
+                mids = getAvg(11, 60) / 255;
+                highs = getAvg(61, 127) / 255;
+
+                // Modulate CONFIG values temporarily for this frame
+                // We need to store base values if we want to return to them, 
+                // but for now let's just ADD to the base config.
+
+                // Actually, let's just pass these modifiers to updateSpheres
+            }
+
+            if (!CONFIG.isPaused) {
+                time += CONFIG.animSpeed;
+                updateSpheres(time, bass, mids, highs);
+            } else {
+                // Even if paused, we might want interaction to work?
+                // Let's allow interaction updates even when paused for fun
+                updateSpheres(time, bass, mids, highs);
+            }
+
+            controls.autoRotate = CONFIG.autoRotate;
             controls.update();
 
+            // Bloom
             if (CONFIG.enableBloom) {
                 composer.render();
             } else {
